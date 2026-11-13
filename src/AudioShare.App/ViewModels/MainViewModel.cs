@@ -28,6 +28,9 @@ public sealed class MainViewModel : ObservableObject, IDisposable
     private long _lastAutoRaiseMs;
     private bool _isCalibrating;
     private string? _selectedPreset;
+    private readonly DispatcherTimer _recoveryTimer;
+    private bool _resumePending;
+    private long _resumeSinceMs;
 
     public MainViewModel()
     {
@@ -35,6 +38,7 @@ public sealed class MainViewModel : ObservableObject, IDisposable
         // 上次没有正常恢复（崩溃、被强制结束、直接关机），先把系统设置改回去
         if (_relay.IsActive) _relay.Restore();
 
+        Update = new UpdateViewModel(_settings);
         _baseLatencyMs = _settings.BaseLatencyMs;
         _alignMode = _settings.AlignMode;
         ToggleCommand = new RelayCommand(Toggle);
@@ -54,6 +58,9 @@ public sealed class MainViewModel : ObservableObject, IDisposable
 
         _meterTimer = new DispatcherTimer(TimeSpan.FromMilliseconds(33), DispatcherPriority.Background, (_, _) => UpdateMeters(), _ui);
         _meterTimer.Start();
+
+        _recoveryTimer = new DispatcherTimer(TimeSpan.FromSeconds(3), DispatcherPriority.Background, (_, _) => Recover(), _ui);
+        _recoveryTimer.Start();
     }
 
     public ObservableCollection<DeviceViewModel> Devices { get; } = new();
@@ -89,6 +96,22 @@ public sealed class MainViewModel : ObservableObject, IDisposable
             _settings.Save();
         }
     }
+
+    public UpdateViewModel Update { get; }
+
+    /// <summary>全局快捷键开关，窗口据此注册/注销。</summary>
+    public bool HotkeysEnabled
+    {
+        get => _settings.HotkeysEnabled;
+        set
+        {
+            _settings.HotkeysEnabled = value;
+            _settings.Save();
+            OnPropertyChanged();
+        }
+    }
+
+    public void ShowStatus(string text) => StatusText = text;
 
     public bool AutoStartEnabled
     {
@@ -162,8 +185,15 @@ public sealed class MainViewModel : ObservableObject, IDisposable
 
     public void Toggle()
     {
-        if (IsRunning) Stop();
-        else Start();
+        if (IsRunning || _resumePending)
+        {
+            _resumePending = false;
+            Stop();
+        }
+        else
+        {
+            Start();
+        }
     }
 
     /// <summary>开机自启时调用：上次退出时在共享，就自动接着共享。</summary>
@@ -351,6 +381,7 @@ public sealed class MainViewModel : ObservableObject, IDisposable
                 {
                     var channel = _router.AddOutput(_enumerator.GetDevice(vm.Id), TargetLatency(vm), (float)(vm.Volume / 100));
                     channel.Mono = vm.Mono;
+                    channel.SetEq(EqOf(vm));
                     _crackleCounts[vm.Id] = 0;
                     vm.HasError = false;
                 }
@@ -376,6 +407,9 @@ public sealed class MainViewModel : ObservableObject, IDisposable
         saved.Volume = vm.Volume;
         saved.DelayMs = vm.DelayMs;
         saved.Mono = vm.Mono;
+        saved.BassDb = vm.BassDb;
+        saved.MidDb = vm.MidDb;
+        saved.TrebleDb = vm.TrebleDb;
 
         var channel = _router.Find(vm.Id);
         switch (property)
@@ -394,6 +428,9 @@ public sealed class MainViewModel : ObservableObject, IDisposable
                 if (channel != null) channel.Mono = vm.Mono;
                 _settings.Save();
                 break;
+            case "Effects":
+                channel?.SetEq(EqOf(vm));
+                break;
         }
     }
 
@@ -405,12 +442,48 @@ public sealed class MainViewModel : ObservableObject, IDisposable
         else UpdateSourceFlags();
     }
 
+    /// <summary>
+    /// 来源设备（或中转设备）被拔掉：先停下并恢复系统设置，然后每隔几秒重新开始，
+    /// 对齐模式会自动换一个中转设备。用户手动点停止才会放弃。
+    /// </summary>
     private void OnCaptureLost(Exception? ex)
     {
         if (!IsRunning) return;
-        Stop();
-        StatusText = "声音来源设备已断开，已停止共享";
+        Stop(keepRunningFlag: true);
+        _resumePending = true;
+        _resumeSinceMs = Environment.TickCount64;
+        StatusText = "声音来源设备断开了，正在自动重新开始…";
     }
+
+    /// <summary>每 3 秒检查一次：断开的设备重新连上、来源设备恢复后，自动接着播放。</summary>
+    private void Recover()
+    {
+        if (_disposed || IsCalibrating) return;
+
+        if (_resumePending && !IsRunning)
+        {
+            Start();
+            if (IsRunning)
+            {
+                _resumePending = false;
+                StateNotice?.Invoke("声音来源已恢复，继续共享");
+            }
+            else if (Environment.TickCount64 - _resumeSinceMs > 120_000)
+            {
+                _resumePending = false;
+                _settings.WasRunning = false;
+                StatusText = "声音来源设备一直没有恢复，已停止共享";
+            }
+            return;
+        }
+
+        // 开关打开、但没在播放的设备（蓝牙断开后重连、切换模式导致中断等）：重新打开
+        if (IsRunning && Devices.Any(d => d.IsEnabled && !d.IsSource && _router.Find(d.Id) == null))
+            SyncOutputs();
+    }
+
+    /// <summary>需要提醒用户的事件（窗口可能藏在托盘里），托盘图标会弹出提示。</summary>
+    public event Action<string>? StateNotice;
 
     private void OnOutputLost(string id, Exception? ex)
     {
@@ -418,7 +491,7 @@ public sealed class MainViewModel : ObservableObject, IDisposable
         if (Devices.FirstOrDefault(d => d.Id == id) is { } vm)
         {
             vm.HasError = true;
-            vm.Status = "设备已断开，重新连接后会自动恢复";
+            vm.Status = "连接中断，正在自动重连…";
         }
         UpdateStatusText();
     }
@@ -604,6 +677,7 @@ public sealed class MainViewModel : ObservableObject, IDisposable
             Devices = Devices.ToDictionary(d => d.Id, d => new DeviceSettings
             {
                 Enabled = d.IsEnabled, Volume = d.Volume, DelayMs = d.DelayMs, Mono = d.Mono,
+                BassDb = d.BassDb, MidDb = d.MidDb, TrebleDb = d.TrebleDb,
             }),
         };
         _settings.Save();
@@ -623,6 +697,23 @@ public sealed class MainViewModel : ObservableObject, IDisposable
         RebuildPresetNames();
         OnPropertyChanged(nameof(SelectedPreset));
     }
+
+    /// <summary>快捷键 Ctrl+Alt+数字：按下拉框里的顺序切换方案。</summary>
+    public void SelectPresetByIndex(int index)
+    {
+        if (index < 0 || index >= PresetNames.Count)
+        {
+            StateNotice?.Invoke($"没有第 {index + 1} 个方案");
+            return;
+        }
+        string name = PresetNames[index];
+        if (SelectedPreset == name) ApplyPreset(_settings.Presets[name]);
+        else SelectedPreset = name;
+        if (!IsRunning) Start();
+        StateNotice?.Invoke($"已切换到方案「{PresetNames[index]}」");
+    }
+
+    private static EqSettings EqOf(DeviceViewModel vm) => new(vm.BassDb, vm.MidDb, vm.TrebleDb);
 
     public string SuggestPresetName()
     {
@@ -651,6 +742,9 @@ public sealed class MainViewModel : ObservableObject, IDisposable
         vm.Volume = s.Volume;
         vm.DelayMs = s.DelayMs;
         vm.Mono = s.Mono;
+        vm.BassDb = s.BassDb;
+        vm.MidDb = s.MidDb;
+        vm.TrebleDb = s.TrebleDb;
         vm.IsEnabled = s.Enabled;
     }
 
@@ -659,6 +753,8 @@ public sealed class MainViewModel : ObservableObject, IDisposable
         if (_disposed) return;
         _disposed = true;
         _meterTimer.Stop();
+        _recoveryTimer.Stop();
+        Update.Stop();
         if (IsRunning) Stop(keepRunningFlag: true);
         _relay.Restore();
         _settings.Save();

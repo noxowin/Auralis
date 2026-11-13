@@ -9,6 +9,9 @@ public sealed class DeviceSettings
     public double Volume { get; set; } = 100;
     public double DelayMs { get; set; }
     public bool Mono { get; set; }
+    public double BassDb { get; set; }
+    public double MidDb { get; set; }
+    public double TrebleDb { get; set; }
 
     public DeviceSettings Clone() => (DeviceSettings)MemberwiseClone();
 }
@@ -54,6 +57,15 @@ public sealed class AppSettings
     public Dictionary<string, DeviceSettings> Devices { get; set; } = new();
 
     public Dictionary<string, Preset> Presets { get; set; } = new();
+
+    /// <summary>全局快捷键：Ctrl+Alt+S 开始/停止，Ctrl+Alt+1~9 切换方案。</summary>
+    public bool HotkeysEnabled { get; set; } = true;
+
+    /// <summary>启动时检查 GitHub 上有没有新版本。</summary>
+    public bool CheckUpdates { get; set; } = true;
+
+    /// <summary>用户选择"跳过"的版本，不再提醒。</summary>
+    public string? SkippedVersion { get; set; }
 
     /// <summary>上次校准用的麦克风。</summary>
     public string? CalibrationMicId { get; set; }

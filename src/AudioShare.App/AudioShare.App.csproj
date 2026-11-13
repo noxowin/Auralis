@@ -11,6 +11,9 @@
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
     <AssemblyName>AudioShare</AssemblyName>
+    <Product>AudioShare</Product>
+    <!-- 发布新版本时改这里，并打同名标签（例如 v0.4.0），GitHub Actions 会自动编译并发布 -->
+    <Version>0.4.0</Version>
     <RootNamespace>AudioShare.App</RootNamespace>
     <ApplicationManifest>app.manifest</ApplicationManifest>
     <!-- 允许在非 Windows 机器上编译检查 -->

@@ -10,11 +10,16 @@ public partial class App : Application
     private Mutex? _instanceMutex;
     private EventWaitHandle? _showSignal;
     private MainWindow? _window;
+    private bool _ownsMutex;
 
     protected override void OnStartup(StartupEventArgs e)
     {
-        _instanceMutex = new Mutex(true, InstanceName, out bool isFirst);
-        if (!isFirst)
+        // 自动更新后重启时，旧版本可能还没完全退出，多等一会儿
+        bool updated = e.Args.Contains(Updater.UpdatedArgument);
+        _instanceMutex = new Mutex(false, InstanceName);
+        try { _ownsMutex = _instanceMutex.WaitOne(updated ? 15000 : 0); }
+        catch (AbandonedMutexException) { _ownsMutex = true; }
+        if (!_ownsMutex)
         {
             // 已经在运行（可能藏在托盘里）：通知它显示窗口，然后自己退出
             try { EventWaitHandle.OpenExisting(InstanceName + ".Show").Set(); } catch { }
@@ -47,10 +52,19 @@ public partial class App : Application
 
         base.OnStartup(e);
 
+        Updater.CleanupOldVersion();
+
         bool autoStarted = e.Args.Contains(AutoStart.Argument);
         _window = new MainWindow();
-        if (autoStarted) _window.StartInTray();
-        else _window.Show();
+        if (autoStarted)
+        {
+            _window.StartInTray();
+        }
+        else
+        {
+            _window.Show();
+            if (updated) _window.ResumeAfterUpdate();
+        }
     }
 
     protected override void OnSessionEnding(SessionEndingCancelEventArgs e)
@@ -63,7 +77,7 @@ public partial class App : Application
     protected override void OnExit(ExitEventArgs e)
     {
         _showSignal?.Dispose();
-        if (_window != null) _instanceMutex?.ReleaseMutex();
+        if (_ownsMutex) _instanceMutex?.ReleaseMutex();
         _instanceMutex?.Dispose();
         base.OnExit(e);
     }

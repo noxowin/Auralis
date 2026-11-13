@@ -55,7 +55,13 @@ public sealed class AdaptiveResampler : ISampleProvider
         WaveFormat = SampleConverter.IsFloat32(outputFormat)
             ? outputFormat
             : WaveFormat.CreateIeeeFloatWaveFormat(outputFormat.SampleRate, channels);
+        _equalizer = new Equalizer(channels, outputFormat.SampleRate);
     }
+
+    private readonly Equalizer _equalizer;
+
+    /// <summary>修改这台设备的音效（低音/人声/高音），下一块数据开始生效。</summary>
+    public void SetEq(EqSettings settings) => _equalizer.Update(settings);
 
     public WaveFormat WaveFormat { get; }
 
@@ -66,6 +72,7 @@ public sealed class AdaptiveResampler : ISampleProvider
         set => _targetLatencyMs = Math.Clamp(value, 10, 2000);
     }
 
+    /// <summary>音量倍数，最高 2（200%）。超过 1 的部分由软限幅防止爆音。</summary>
     public float Volume
     {
         get => _volume;
@@ -141,7 +148,6 @@ public sealed class AdaptiveResampler : ISampleProvider
         double ratio = _baseRatio * (1 + adjust);
 
         float vol = _volume;
-        float peak = 0;
         int written = 0;
 
         for (; written < frames; written++)
@@ -163,12 +169,20 @@ public sealed class AdaptiveResampler : ISampleProvider
             for (int c = 0; c < _channels; c++)
             {
                 float y0 = Sample(ip - 1, c), y1 = Sample(ip, c), y2 = Sample(ip + 1, c), y3 = Sample(ip + 2, c);
-                float v = CatmullRom(y0, y1, y2, y3, t) * vol;
-                outSpan[o + c] = v;
-                float a = Math.Abs(v);
-                if (a > peak) peak = a;
+                outSpan[o + c] = CatmullRom(y0, y1, y2, y3, t) * vol;
             }
             _pos += ratio;
+        }
+
+        var produced = outSpan[..(written * _channels)];
+        _equalizer.Process(produced);
+        float peak = 0;
+        for (int i = 0; i < produced.Length; i++)
+        {
+            float v = Equalizer.SoftClip(produced[i]);
+            produced[i] = v;
+            float a = Math.Abs(v);
+            if (a > peak) peak = a;
         }
 
         if (written < frames) outSpan[(written * _channels)..].Clear();

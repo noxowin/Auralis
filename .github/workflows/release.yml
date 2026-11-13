@@ -1,0 +1,53 @@
+# 推送 v* 标签（例如 v0.4.0）时：运行模拟测试，编译单文件 exe，发布到 GitHub Releases。
+# 程序里的"检查更新"读取的就是这里发布的 AudioShare.exe。
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 8.0.x
+
+      - name: 模拟测试
+        run: dotnet run --project tests/AudioShare.Sim -c Release
+
+      - name: 检查版本号和标签一致
+        shell: pwsh
+        run: |
+          $version = ([xml](Get-Content src/AudioShare.App/AudioShare.App.csproj)).Project.PropertyGroup.Version | Where-Object { $_ } | Select-Object -First 1
+          if ("v$version" -ne "${{ github.ref_name }}" -and "${{ github.event_name }}" -eq "push") {
+            throw "csproj 里的版本 v$version 和标签 ${{ github.ref_name }} 不一致"
+          }
+
+      - name: 编译单文件 exe
+        run: >
+          dotnet publish src/AudioShare.App -c Release -r win-x64 --self-contained true
+          -p:PublishSingleFile=true -p:IncludeNativeLibrariesForSelfExtract=true
+          -p:EnableCompressionInSingleFile=true -p:DebugType=none -o publish
+
+      - name: 打包 zip
+        shell: pwsh
+        run: |
+          Copy-Item README.md publish/
+          Compress-Archive -Path publish/AudioShare.exe, publish/README.md -DestinationPath AudioShare-${{ github.ref_name }}-win-x64.zip
+
+      - name: 发布 Release
+        if: github.event_name == 'push'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: >
+          gh release create ${{ github.ref_name }}
+          publish/AudioShare.exe AudioShare-${{ github.ref_name }}-win-x64.zip
+          --title "AudioShare ${{ github.ref_name }}" --notes-file RELEASE_NOTES.md

@@ -54,6 +54,8 @@ public sealed class OutputChannel : IDisposable
     /// <summary>因为缓冲不够出现断续（杂音）的累计次数。</summary>
     public int CrackleCount => _resampler.CrackleCount;
 
+    public void SetEq(EqSettings settings) => _resampler.SetEq(settings);
+
     /// <summary>左右声道合并：只戴一只耳机时也能听到完整内容。</summary>
     public bool Mono { get; set; }
 

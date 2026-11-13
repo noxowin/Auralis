@@ -10,6 +10,7 @@ public sealed class TrayIcon : IDisposable
     private readonly Forms.NotifyIcon _icon;
     private readonly Forms.ToolStripMenuItem _toggleItem;
     private readonly Forms.ToolStripMenuItem _autoStartItem;
+    private readonly Forms.ToolStripMenuItem _presetsItem;
     private readonly MainViewModel _viewModel;
 
     public TrayIcon(MainViewModel viewModel, Action showWindow, Action exit)
@@ -18,15 +19,21 @@ public sealed class TrayIcon : IDisposable
 
         _toggleItem = new Forms.ToolStripMenuItem("", null, (_, _) => _viewModel.Toggle());
         _autoStartItem = new Forms.ToolStripMenuItem("开机自动启动", null, (_, _) => _viewModel.AutoStartEnabled = !_viewModel.AutoStartEnabled);
+        _presetsItem = new Forms.ToolStripMenuItem("切换方案");
 
         var menu = new Forms.ContextMenuStrip();
         menu.Items.Add(new Forms.ToolStripMenuItem("打开主界面", null, (_, _) => showWindow()) { Font = new System.Drawing.Font(menu.Font, System.Drawing.FontStyle.Bold) });
         menu.Items.Add(_toggleItem);
+        menu.Items.Add(_presetsItem);
         menu.Items.Add(new Forms.ToolStripSeparator());
         menu.Items.Add(_autoStartItem);
         menu.Items.Add(new Forms.ToolStripSeparator());
         menu.Items.Add(new Forms.ToolStripMenuItem("退出", null, (_, _) => exit()));
-        menu.Opening += (_, _) => _autoStartItem.Checked = _viewModel.AutoStartEnabled;
+        menu.Opening += (_, _) =>
+        {
+            _autoStartItem.Checked = _viewModel.AutoStartEnabled;
+            RebuildPresets();
+        };
 
         var iconStream = Application.GetResourceStream(new Uri("pack://application:,,,/Assets/app.ico")).Stream;
         _icon = new Forms.NotifyIcon
@@ -42,6 +49,23 @@ public sealed class TrayIcon : IDisposable
 
         _viewModel.StateChanged += Update;
         Update();
+    }
+
+    private void RebuildPresets()
+    {
+        _presetsItem.DropDownItems.Clear();
+        _presetsItem.Enabled = _viewModel.PresetNames.Count > 0;
+        for (int i = 0; i < _viewModel.PresetNames.Count; i++)
+        {
+            int index = i;
+            string name = _viewModel.PresetNames[i];
+            var item = new Forms.ToolStripMenuItem(name, null, (_, _) => _viewModel.SelectPresetByIndex(index))
+            {
+                Checked = name == _viewModel.SelectedPreset,
+                ShortcutKeyDisplayString = i < 9 ? $"Ctrl+Alt+{i + 1}" : null,
+            };
+            _presetsItem.DropDownItems.Add(item);
+        }
     }
 
     public void ShowHint(string message) =>

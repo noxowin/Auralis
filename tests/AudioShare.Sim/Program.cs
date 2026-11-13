@@ -160,5 +160,36 @@ Calibrate("三台设备, 16k 麦克风, 噪声大", 16000, new[] { 40.0, 180.0, 
     Expect(!r.Success, "没听到测试音时应该报告失败");
 }
 
+// 音效：低音 +6dB 时 80Hz 应变大约 2 倍，5kHz 基本不变；音量 200% 时输出不超过 1.0
+double ToneGain(double freq, EqSettings eq, float volume = 1f)
+{
+    const int rate = 48000, block = 4800; // 每次写入、读出 100ms
+    var ring = new FloatRingBuffer(rate * 2);
+    var rs = new AdaptiveResampler(ring, 2, rate, WaveFormat.CreateIeeeFloatWaveFormat(rate, 2)) { TargetLatencyMs = 100, Volume = volume };
+    rs.SetEq(eq);
+    var input = new float[block * 2];
+    var output = new float[block * 2];
+    double max = 0;
+    long n = 0;
+    for (int b = 0; b < 30; b++)
+    {
+        for (int i = 0; i < block; i++, n++) input[2 * i] = input[2 * i + 1] = (float)(0.25 * Math.Sin(2 * Math.PI * freq * n / rate));
+        ring.Write(input);
+        rs.Read(output, 0, output.Length);
+        if (b >= 20) max = Math.Max(max, output.Max(Math.Abs)); // 最后 1 秒，避开蓄水和滤波器起振
+    }
+    return max / 0.25;
+}
+
+double bass80 = ToneGain(80, new EqSettings(BassDb: 6));
+double bass5k = ToneGain(5000, new EqSettings(BassDb: 6));
+double treble10k = ToneGain(10000, new EqSettings(TrebleDb: -6));
+double loud = ToneGain(50, new EqSettings(BassDb: 12), volume: 2f) * 0.25;
+Console.WriteLine($"{"音效",-30} 低音+6dB: 80Hz ×{bass80:F2}, 5kHz ×{bass5k:F2}；高音-6dB: 10kHz ×{treble10k:F2}；200%+低音12dB 峰值 {loud:F3}");
+Expect(bass80 > 1.6 && bass80 < 2.1, "低音 +6dB 时 80Hz 应放大约 2 倍");
+Expect(Math.Abs(bass5k - 1) < 0.05, "低音调节不应影响 5kHz");
+Expect(treble10k > 0.45 && treble10k < 0.65, "高音 -6dB 时 10kHz 应约减半");
+Expect(loud <= 1.0, "软限幅后峰值不应超过 1.0");
+
 Console.WriteLine(bad == 0 ? "PASS" : "FAIL");
 return bad == 0 ? 0 : 1;

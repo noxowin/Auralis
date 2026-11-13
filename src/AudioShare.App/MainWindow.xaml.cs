@@ -12,6 +12,7 @@ public partial class MainWindow : Window
     private readonly TrayIcon _tray;
     private bool _exiting;
     private bool _hintShown;
+    private readonly Hotkeys _hotkeys;
 
     public MainWindow()
     {
@@ -20,6 +21,42 @@ public partial class MainWindow : Window
         DataContext = _viewModel;
         _tray = new TrayIcon(_viewModel, ShowFromTray, ExitApp);
         SourceInitialized += (_, _) => UseDarkTitleBar();
+
+        // 开机自启时窗口不显示，也要先创建窗口句柄，全局快捷键才能收到
+        var hwnd = new WindowInteropHelper(this).EnsureHandle();
+        _hotkeys = new Hotkeys(hwnd);
+        _hotkeys.TogglePressed += () =>
+        {
+            _viewModel.Toggle();
+            _tray.ShowHint(_viewModel.IsRunning ? "已开始共享" : "已停止共享");
+        };
+        _hotkeys.PresetPressed += index => _viewModel.SelectPresetByIndex(index);
+        _viewModel.StateNotice += message => _tray.ShowHint(message);
+        _viewModel.Update.Found += update => _tray.ShowHint($"AudioShare 有新版本 {update.Version.ToString(3)}，打开窗口可以一键更新。");
+        _viewModel.PropertyChanged += (_, e) =>
+        {
+            if (e.PropertyName == nameof(MainViewModel.HotkeysEnabled)) ApplyHotkeys();
+        };
+        ApplyHotkeys();
+    }
+
+    private void ApplyHotkeys()
+    {
+        if (!_viewModel.HotkeysEnabled)
+        {
+            _hotkeys.Unregister();
+            return;
+        }
+        var failed = _hotkeys.Register();
+        if (failed.Count > 0)
+            _viewModel.ShowStatus($"快捷键 {string.Join("、", failed)} 被其他程序占用了，这几个快捷键不可用");
+    }
+
+    /// <summary>自动更新后重启：上次在共享就接着共享。</summary>
+    public void ResumeAfterUpdate()
+    {
+        _viewModel.ResumeIfWasRunning();
+        _viewModel.ShowStatus($"已更新到 {Updater.CurrentVersion.ToString(3)}");
     }
 
     /// <summary>开机自启：不弹窗口，只在托盘里，上次在共享就接着共享。</summary>
@@ -39,6 +76,7 @@ public partial class MainWindow : Window
     {
         if (_exiting) return;
         _exiting = true;
+        _hotkeys.Dispose();
         _viewModel.Dispose();
         _tray.Dispose();
         Close();
@@ -67,6 +105,27 @@ public partial class MainWindow : Window
         }
         base.OnClosing(e);
     }
+
+    private async void OnInstallUpdate(object sender, RoutedEventArgs e)
+    {
+        var exe = await _viewModel.Update.InstallAsync();
+        if (exe == null) return;
+        // 先正常退出（恢复系统设置、记住正在共享），再启动新版本
+        ExitApp();
+        Updater.Restart(exe);
+    }
+
+    private void OnResetEffects(object sender, RoutedEventArgs e)
+    {
+        if ((sender as FrameworkElement)?.Tag is DeviceViewModel device) device.ResetEffects();
+    }
+
+    private void OnSkipUpdate(object sender, RoutedEventArgs e) => _viewModel.Update.Skip();
+
+    private void OnUpdateDetails(object sender, RoutedEventArgs e) =>
+        Updater.OpenReleasesPage(_viewModel.Update.Available?.PageUrl);
+
+    private async void OnCheckUpdate(object sender, RoutedEventArgs e) => await _viewModel.Update.CheckAsync(manual: true);
 
     private void OnCalibrate(object sender, RoutedEventArgs e)
     {

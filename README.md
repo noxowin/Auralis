@@ -110,8 +110,8 @@
 ## 发布新版本
 
 1. 修改 `src/AudioShare.App/AudioShare.App.csproj` 里的 `<Version>`，更新 `RELEASE_NOTES.md`。
-2. 提交并推送后，在 GitHub 的 Releases 页面新建 Release，标签填 `v` + 版本号（例如 `v0.4.0`），说明可以复制 `RELEASE_NOTES.md`。
-3. 发布后 GitHub Actions 会运行模拟测试、编译单文件 exe，并上传到这个 Release（几分钟）。程序的"检查更新"读的就是这里。
+2. 提交并推送后，打开仓库的 Actions → Release → Run workflow。
+3. 它会运行模拟测试、编译单文件 exe，按版本号新建 Release（例如 `v0.4.0`）并上传，大约几分钟。程序的"检查更新"读的就是这里。
 
 ## 从源码构建
 

@@ -1,0 +1,208 @@
+<Window x:Class="AudioShare.App.MainWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:vm="clr-namespace:AudioShare.App.ViewModels"
+        Title="AudioShare · 多设备同步播放"
+        Width="560" Height="760" MinWidth="460" MinHeight="520"
+        WindowStartupLocation="CenterScreen"
+        Icon="Assets/app.ico"
+        Background="{StaticResource WindowBrush}"
+        Foreground="{StaticResource TextBrush}"
+        FontFamily="{StaticResource UiFont}" FontSize="14"
+        UseLayoutRounding="True" TextOptions.TextFormattingMode="Display">
+
+    <Window.Resources>
+        <BooleanToVisibilityConverter x:Key="BoolToVis" />
+
+        <DataTemplate x:Key="DeviceTemplate" DataType="{x:Type vm:DeviceViewModel}">
+            <Border x:Name="CardRoot" Style="{StaticResource Card}" Margin="0,0,0,8">
+                <Grid>
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="44" />
+                        <ColumnDefinition Width="*" />
+                        <ColumnDefinition Width="Auto" />
+                    </Grid.ColumnDefinitions>
+                    <Grid.RowDefinitions>
+                        <RowDefinition Height="Auto" />
+                        <RowDefinition Height="Auto" />
+                        <RowDefinition Height="Auto" />
+                    </Grid.RowDefinitions>
+
+                    <TextBlock x:Name="Icon" Text="{Binding Icon}" FontFamily="{StaticResource IconFont}" FontSize="22"
+                               VerticalAlignment="Center" Foreground="{StaticResource SubTextBrush}" />
+
+                    <StackPanel Grid.Column="1" VerticalAlignment="Center">
+                        <TextBlock Text="{Binding Name}" FontSize="14" FontWeight="SemiBold" TextTrimming="CharacterEllipsis" />
+                        <TextBlock x:Name="StatusLine" FontSize="12" Foreground="{StaticResource SubTextBrush}" Margin="0,2,0,0">
+                            <Run Text="{Binding Status, Mode=OneWay}" />
+                            <Run Text="  ·  " />
+                            <Run Text="{Binding Format, Mode=OneWay}" />
+                        </TextBlock>
+                    </StackPanel>
+
+                    <CheckBox Grid.Column="2" Style="{StaticResource ToggleSwitch}" VerticalAlignment="Center"
+                              IsChecked="{Binding IsEnabled}" IsEnabled="{Binding CanToggle}"
+                              ToolTip="在这个设备上同时播放" />
+
+                    <ProgressBar Grid.Row="1" Grid.Column="1" Grid.ColumnSpan="2" Style="{StaticResource LevelMeter}"
+                                 Margin="0,10,0,0" Value="{Binding Level, Mode=OneWay}" />
+
+                    <Grid x:Name="Controls" Grid.Row="2" Grid.Column="1" Grid.ColumnSpan="2" Margin="0,12,0,0" Visibility="Collapsed">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="Auto" />
+                            <ColumnDefinition Width="*" />
+                            <ColumnDefinition Width="44" />
+                        </Grid.ColumnDefinitions>
+                        <Grid.RowDefinitions>
+                            <RowDefinition Height="Auto" />
+                            <RowDefinition Height="Auto" />
+                        </Grid.RowDefinitions>
+
+                        <TextBlock Text="&#xE767;" FontFamily="{StaticResource IconFont}" VerticalAlignment="Center"
+                                   Foreground="{StaticResource SubTextBrush}" Margin="0,0,10,0" ToolTip="音量" />
+                        <Slider Grid.Column="1" Minimum="0" Maximum="100" Value="{Binding Volume}"
+                                SmallChange="1" LargeChange="10" ToolTip="这个设备的音量" />
+                        <TextBlock Grid.Column="2" Text="{Binding Volume, StringFormat={}{0:0}%}" VerticalAlignment="Center"
+                                   HorizontalAlignment="Right" FontSize="12" Foreground="{StaticResource SubTextBrush}" />
+
+                        <TextBlock Grid.Row="1" Text="&#xE916;" FontFamily="{StaticResource IconFont}" VerticalAlignment="Center"
+                                   Foreground="{StaticResource SubTextBrush}" Margin="0,8,10,0" ToolTip="延迟对齐" />
+                        <Slider Grid.Row="1" Grid.Column="1" Minimum="0" Maximum="500" Value="{Binding DelayMs}" Margin="0,8,0,0"
+                                SmallChange="5" LargeChange="50"
+                                ToolTip="让这个设备晚一点出声，用来和蓝牙等延迟较高的设备对齐" />
+                        <TextBlock Grid.Row="1" Grid.Column="2" Text="{Binding DelayMs, StringFormat={}+{0:0}ms}" Margin="0,8,0,0"
+                                   VerticalAlignment="Center" HorizontalAlignment="Right" FontSize="12"
+                                   Foreground="{StaticResource SubTextBrush}" />
+                    </Grid>
+                </Grid>
+            </Border>
+            <DataTemplate.Triggers>
+                <DataTrigger Binding="{Binding IsEnabled}" Value="True">
+                    <Setter TargetName="Controls" Property="Visibility" Value="Visible" />
+                    <Setter TargetName="Icon" Property="Foreground" Value="{StaticResource AccentBrush}" />
+                </DataTrigger>
+                <DataTrigger Binding="{Binding IsSource}" Value="True">
+                    <Setter TargetName="Controls" Property="Visibility" Value="Collapsed" />
+                    <Setter TargetName="Icon" Property="Foreground" Value="{StaticResource SuccessBrush}" />
+                    <Setter TargetName="CardRoot" Property="BorderBrush" Value="#FF3F5A3B" />
+                </DataTrigger>
+                <DataTrigger Binding="{Binding HasError}" Value="True">
+                    <Setter TargetName="StatusLine" Property="Foreground" Value="{StaticResource ErrorBrush}" />
+                </DataTrigger>
+                <Trigger SourceName="CardRoot" Property="IsMouseOver" Value="True">
+                    <Setter TargetName="CardRoot" Property="Background" Value="{StaticResource CardHoverBrush}" />
+                </Trigger>
+            </DataTemplate.Triggers>
+        </DataTemplate>
+    </Window.Resources>
+
+    <Grid Margin="24,20,24,20">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="*" />
+            <RowDefinition Height="Auto" />
+        </Grid.RowDefinitions>
+
+        <!-- 标题 + 开始按钮 -->
+        <Grid>
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="*" />
+                <ColumnDefinition Width="Auto" />
+            </Grid.ColumnDefinitions>
+            <StackPanel>
+                <TextBlock Text="多设备同步播放" FontSize="26" FontWeight="SemiBold" />
+                <TextBlock Text="{Binding StatusText}" Foreground="{StaticResource SubTextBrush}" Margin="0,4,0,0"
+                           TextWrapping="Wrap" />
+            </StackPanel>
+            <Button Grid.Column="1" Style="{StaticResource AccentButton}" Command="{Binding ToggleCommand}"
+                    VerticalAlignment="Center" Margin="16,0,0,0">
+                <StackPanel Orientation="Horizontal">
+                    <TextBlock x:Name="ToggleIcon" FontFamily="{StaticResource IconFont}" FontSize="14"
+                               VerticalAlignment="Center" Margin="0,0,8,0">
+                        <TextBlock.Style>
+                            <Style TargetType="TextBlock">
+                                <Setter Property="Text" Value="&#xE768;" />
+                                <Style.Triggers>
+                                    <DataTrigger Binding="{Binding IsRunning}" Value="True">
+                                        <Setter Property="Text" Value="&#xE71A;" />
+                                    </DataTrigger>
+                                </Style.Triggers>
+                            </Style>
+                        </TextBlock.Style>
+                    </TextBlock>
+                    <TextBlock Text="{Binding ToggleText}" VerticalAlignment="Center" />
+                </StackPanel>
+            </Button>
+        </Grid>
+
+        <!-- 声音来源 -->
+        <Border Grid.Row="1" Style="{StaticResource Card}" Margin="0,20,0,0">
+            <StackPanel>
+                <Grid Margin="0,0,0,14">
+                    <StackPanel Margin="0,0,56,0">
+                        <TextBlock Text="对齐模式（推荐）" FontWeight="SemiBold" />
+                        <TextBlock Text="所有设备播放同一份声音，可以用延迟滑块完全对齐，不会有回声"
+                                   FontSize="12" Foreground="{StaticResource SubTextBrush}" TextWrapping="Wrap" Margin="0,2,0,0" />
+                    </StackPanel>
+                    <CheckBox Style="{StaticResource ToggleSwitch}" HorizontalAlignment="Right" VerticalAlignment="Center"
+                              IsChecked="{Binding AlignMode}" />
+                </Grid>
+                <Border Height="1" Background="{StaticResource CardBorderBrush}" Margin="0,0,0,12" />
+                <TextBlock Text="{Binding SourceTitle}" FontWeight="SemiBold" />
+                <TextBlock Text="{Binding SourceHint}"
+                           FontSize="12" Foreground="{StaticResource SubTextBrush}" TextWrapping="Wrap" Margin="0,2,0,10" />
+                <ComboBox ItemsSource="{Binding Sources}" SelectedItem="{Binding SelectedSource}" />
+            </StackPanel>
+        </Border>
+
+        <!-- 设备列表标题 -->
+        <Grid Grid.Row="2" Margin="0,20,0,8">
+            <TextBlock Text="输出设备" FontWeight="SemiBold" VerticalAlignment="Center" />
+            <Button Style="{StaticResource SubtleButton}" HorizontalAlignment="Right" Command="{Binding RefreshCommand}"
+                    ToolTip="重新扫描设备">
+                <StackPanel Orientation="Horizontal">
+                    <TextBlock Text="&#xE72C;" FontFamily="{StaticResource IconFont}" FontSize="12"
+                               VerticalAlignment="Center" Margin="0,0,6,0" />
+                    <TextBlock Text="刷新" FontSize="12" />
+                </StackPanel>
+            </Button>
+        </Grid>
+
+        <ScrollViewer Grid.Row="3" VerticalScrollBarVisibility="Auto">
+            <ItemsControl ItemsSource="{Binding Devices}" ItemTemplate="{StaticResource DeviceTemplate}" />
+        </ScrollViewer>
+
+        <!-- 全局延迟 + 开机自启 -->
+        <Border Grid.Row="4" Style="{StaticResource Card}" Margin="0,12,0,0" Padding="16,12">
+            <StackPanel>
+            <Grid>
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="Auto" />
+                    <ColumnDefinition Width="*" />
+                    <ColumnDefinition Width="56" />
+                </Grid.ColumnDefinitions>
+                <StackPanel VerticalAlignment="Center" Margin="0,0,16,0">
+                    <TextBlock Text="缓冲" FontWeight="SemiBold" />
+                    <TextBlock Text="出现杂音时调大" FontSize="12" Foreground="{StaticResource SubTextBrush}" />
+                </StackPanel>
+                <Slider Grid.Column="1" Minimum="20" Maximum="300" Value="{Binding BaseLatencyMs}"
+                        SmallChange="5" LargeChange="20" />
+                <TextBlock Grid.Column="2" Text="{Binding BaseLatencyMs, StringFormat={}{0:0} ms}" HorizontalAlignment="Right"
+                           VerticalAlignment="Center" Foreground="{StaticResource SubTextBrush}" />
+            </Grid>
+            <Border Height="1" Background="{StaticResource CardBorderBrush}" Margin="0,12" />
+            <Grid>
+                <StackPanel Margin="0,0,56,0">
+                    <TextBlock Text="开机自动启动" FontWeight="SemiBold" />
+                    <TextBlock Text="开机后在托盘里运行，上次在共享就自动接着共享" FontSize="12"
+                               Foreground="{StaticResource SubTextBrush}" TextWrapping="Wrap" />
+                </StackPanel>
+                <CheckBox Style="{StaticResource ToggleSwitch}" HorizontalAlignment="Right" VerticalAlignment="Center"
+                          IsChecked="{Binding AutoStartEnabled}" />
+            </Grid>
+            </StackPanel>
+        </Border>
+    </Grid>
+</Window>

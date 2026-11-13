@@ -16,6 +16,11 @@ public sealed class AdaptiveResampler : ISampleProvider
     private const double Kp = 0.05;
     private const double Ki = 0.01;
     private const double HardResyncSeconds = 0.05;
+    // 读空时区分两种情况：
+    // 缓冲不够（杂音）：读空前采集端刚送过数据，读空后很快又有新数据；
+    // 系统停止播放：读空后很久都没有新数据。
+    private const long RecentWriteMs = 30;
+    private const long ResumeWindowMs = 100;
 
     private readonly FloatRingBuffer _ring;
     private readonly int _channels;
@@ -34,6 +39,8 @@ public sealed class AdaptiveResampler : ISampleProvider
     private volatile int _targetLatencyMs = 80;
     private volatile float _volume = 1f;
     private volatile float _peak;
+    private int _crackles;
+    private long _starvedAtMs = -1;
 
     public AdaptiveResampler(FloatRingBuffer ring, int channels, int inRate, WaveFormat outputFormat)
     {
@@ -76,6 +83,12 @@ public sealed class AdaptiveResampler : ISampleProvider
 
     public bool IsPriming => _priming;
 
+    /// <summary>因为缓冲不够而断续的次数。界面据此自动加大缓冲。</summary>
+    public int CrackleCount => Volatile.Read(ref _crackles);
+
+    /// <summary>当前时间（毫秒）。测试时可以换成虚拟时钟。</summary>
+    public Func<long> NowMs { get; set; } = () => Environment.TickCount64;
+
     private double BufferedFrames() => (double)_ring.Count / _channels + Math.Max(0, _localFrames - _pos);
 
     public int Read(float[] buffer, int offset, int count)
@@ -84,6 +97,8 @@ public sealed class AdaptiveResampler : ISampleProvider
         var outSpan = buffer.AsSpan(offset, frames * _channels);
         double targetFrames = _targetLatencyMs * _inRate / 1000.0;
         double fill = BufferedFrames();
+
+        if (_starvedAtMs >= 0) CheckStarvation();
 
         if (_priming)
         {
@@ -134,7 +149,10 @@ public sealed class AdaptiveResampler : ISampleProvider
             int ip = (int)_pos;
             if (ip + 2 >= _localFrames && !Refill(ip))
             {
-                // 采集端没有数据（系统静音时 WASAPI loopback 不会送数据）
+                // 采集端没有数据：可能是系统没在放声音（WASAPI loopback 不会送数据），
+                // 也可能是缓冲太小、数据没跟上（会听到杂音）
+                long now = NowMs();
+                _starvedAtMs = now - _ring.LastWriteMs < RecentWriteMs ? now : -1;
                 _priming = true;
                 break;
             }
@@ -156,6 +174,19 @@ public sealed class AdaptiveResampler : ISampleProvider
         if (written < frames) outSpan[(written * _channels)..].Clear();
         _peak = peak;
         return count;
+    }
+
+    private void CheckStarvation()
+    {
+        if (_ring.LastWriteMs > _starvedAtMs)
+        {
+            Interlocked.Increment(ref _crackles);
+            _starvedAtMs = -1;
+        }
+        else if (NowMs() - _starvedAtMs > ResumeWindowMs)
+        {
+            _starvedAtMs = -1;
+        }
     }
 
     private float Sample(int frame, int channel)

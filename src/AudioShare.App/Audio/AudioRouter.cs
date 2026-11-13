@@ -15,6 +15,9 @@ public sealed class AudioRouter : IDisposable
     private float[] _floatBuffer = Array.Empty<float>();
     private readonly object _gate = new();
     private volatile float _sourcePeak;
+    private long _sourceFrames;
+    private volatile CalibrationPlan? _calibration;
+    private float[] _calibrationBuffer = Array.Empty<float>();
 
     public bool IsRunning => _capture != null;
 
@@ -32,6 +35,15 @@ public sealed class AudioRouter : IDisposable
     public event Action<string, Exception?>? OutputStopped;
 
     public IReadOnlyList<OutputChannel> Outputs => _outputs;
+
+    /// <summary>从开始采集到现在送出的总帧数，校准时用作时间轴。</summary>
+    public long SourceFrames => Interlocked.Read(ref _sourceFrames);
+
+    /// <summary>
+    /// 校准期间：所有输出只播放静音和测试音，测试音按计划插在指定的帧位置上。
+    /// 因为所有设备共用同一条采集时间轴，测得的到达时间差就是设备之间的延迟差。
+    /// </summary>
+    public void SetCalibration(CalibrationPlan? plan) => _calibration = plan;
 
     public void Start(MMDevice source)
     {
@@ -120,8 +132,22 @@ public sealed class AudioRouter : IDisposable
         }
         _sourcePeak = peak;
 
+        long blockStart = Interlocked.Add(ref _sourceFrames, frames) - frames;
+        var plan = _calibration;
+        if (plan == null)
+        {
+            foreach (var output in _outputs)
+                output.Push(_floatBuffer, channels, frames);
+            return;
+        }
+
+        if (_calibrationBuffer.Length < samples) _calibrationBuffer = new float[samples];
         foreach (var output in _outputs)
-            output.Push(_floatBuffer, channels, frames);
+        {
+            Array.Clear(_calibrationBuffer, 0, samples);
+            plan.Render(output.DeviceId, blockStart, _calibrationBuffer, channels, frames);
+            output.Push(_calibrationBuffer, channels, frames);
+        }
     }
 
     public void Dispose() => Stop();

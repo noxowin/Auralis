@@ -19,6 +19,9 @@ public sealed class FloatRingBuffer
 
     public int Capacity => _buffer.Length;
 
+    /// <summary>最近一次写入的时间（毫秒，由写入方设置）。用来区分"真的断流"和"系统本来就没声音"。</summary>
+    public long LastWriteMs { get; set; } = long.MinValue / 2;
+
     public int Count
     {
         get { lock (_lock) return _count; }

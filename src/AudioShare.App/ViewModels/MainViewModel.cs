@@ -2,6 +2,7 @@ using System.Collections.ObjectModel;
 using System.Windows.Input;
 using System.Windows.Threading;
 using AudioShare.App.Audio;
+using AudioShare.Core;
 using NAudio.CoreAudioApi;
 
 namespace AudioShare.App.ViewModels;
@@ -23,6 +24,10 @@ public sealed class MainViewModel : ObservableObject, IDisposable
     private double _baseLatencyMs;
     private bool _alignMode;
     private bool _disposed;
+    private readonly Dictionary<string, int> _crackleCounts = new();
+    private long _lastAutoRaiseMs;
+    private bool _isCalibrating;
+    private string? _selectedPreset;
 
     public MainViewModel()
     {
@@ -42,6 +47,7 @@ public sealed class MainViewModel : ObservableObject, IDisposable
         _router.OutputStopped += (id, ex) => _ui.BeginInvoke(() => OnOutputLost(id, ex));
 
         RefreshDevices();
+        RebuildPresetNames();
         _selectedSource = Sources.FirstOrDefault(s => s.Id == _settings.SourceDeviceId) ?? Sources.FirstOrDefault();
         UpdateSourceFlags();
         UpdateStatusText();
@@ -284,10 +290,7 @@ public sealed class MainViewModel : ObservableObject, IDisposable
             if (_settings.Devices.TryGetValue(device.ID, out var saved))
             {
                 // 先复制出来：给 vm 赋值会触发回调并改写 saved
-                var (volume, delay, enabled) = (saved.Volume, saved.DelayMs, saved.Enabled);
-                vm.Volume = volume;
-                vm.DelayMs = delay;
-                vm.IsEnabled = enabled;
+                ApplyDeviceSettings(vm, saved.Clone());
             }
             Devices.Add(vm);
         }
@@ -346,7 +349,9 @@ public sealed class MainViewModel : ObservableObject, IDisposable
             {
                 try
                 {
-                    _router.AddOutput(_enumerator.GetDevice(vm.Id), TargetLatency(vm), (float)(vm.Volume / 100));
+                    var channel = _router.AddOutput(_enumerator.GetDevice(vm.Id), TargetLatency(vm), (float)(vm.Volume / 100));
+                    channel.Mono = vm.Mono;
+                    _crackleCounts[vm.Id] = 0;
                     vm.HasError = false;
                 }
                 catch (Exception ex)
@@ -370,6 +375,7 @@ public sealed class MainViewModel : ObservableObject, IDisposable
         saved.Enabled = vm.IsEnabled;
         saved.Volume = vm.Volume;
         saved.DelayMs = vm.DelayMs;
+        saved.Mono = vm.Mono;
 
         var channel = _router.Find(vm.Id);
         switch (property)
@@ -383,6 +389,10 @@ public sealed class MainViewModel : ObservableObject, IDisposable
                 break;
             case nameof(DeviceViewModel.DelayMs) when channel != null:
                 channel.TargetLatencyMs = TargetLatency(vm);
+                break;
+            case nameof(DeviceViewModel.Mono):
+                if (channel != null) channel.Mono = vm.Mono;
+                _settings.Save();
                 break;
         }
     }
@@ -444,7 +454,10 @@ public sealed class MainViewModel : ObservableObject, IDisposable
             if (_router.Find(vm.Id) is { } ch)
             {
                 vm.Level = ch.Peak;
-                vm.Status = ch.IsWaiting ? "等待声音…" : $"同步中 · 缓冲 {ch.BufferedMs:0} ms";
+                vm.Status = _isCalibrating ? "校准中…"
+                    : ch.IsWaiting ? "等待声音…"
+                    : $"同步中 · 缓冲 {ch.BufferedMs:0} ms";
+                CheckCrackles(vm, ch);
             }
             else
             {
@@ -452,6 +465,193 @@ public sealed class MainViewModel : ObservableObject, IDisposable
                 if (!vm.HasError) vm.Status = vm.IsEnabled ? (IsRunning ? "正在连接…" : "已选中") : "未启用";
             }
         }
+    }
+
+    /// <summary>
+    /// 自动防杂音：某个设备因为缓冲不够断续了，就把所有设备共用的缓冲加 10 ms。
+    /// 所有设备一起加，所以已经调好的对齐不会被打乱。
+    /// </summary>
+    private void CheckCrackles(DeviceViewModel vm, OutputChannel channel)
+    {
+        int count = channel.CrackleCount;
+        int last = _crackleCounts.GetValueOrDefault(vm.Id);
+        _crackleCounts[vm.Id] = count;
+        if (count <= last || _isCalibrating) return;
+
+        // 刚加过就先等缓冲蓄满再看，避免一次断续连加好几次
+        long now = Environment.TickCount64;
+        if (now - _lastAutoRaiseMs < 3000 || BaseLatencyMs >= MaxBaseLatencyMs) return;
+        _lastAutoRaiseMs = now;
+        BaseLatencyMs = Math.Min(MaxBaseLatencyMs, BaseLatencyMs + 10);
+        StatusText = $"「{vm.Name}」出现断续，已自动把缓冲加到 {BaseLatencyMs:0} ms";
+    }
+
+    private const double MaxBaseLatencyMs = 300;
+
+    // ───────────── 自动校准 ─────────────
+
+    public bool IsCalibrating
+    {
+        get => _isCalibrating;
+        private set => Set(ref _isCalibrating, value);
+    }
+
+    /// <summary>不能校准时返回原因；可以校准时返回 null。</summary>
+    public string? CalibrationBlocker()
+    {
+        if (!IsRunning) return "请先点「开始共享」，再来校准。";
+        if (!AlignMode) return "校准需要对齐模式：直接模式下来源设备不经过本程序，无法测量。请先打开对齐模式。";
+        if (_router.Outputs.Count < 2) return "至少要打开两台设备才需要对齐。";
+        return null;
+    }
+
+    public IReadOnlyList<SourceOption> GetMicrophones() =>
+        _enumerator.EnumerateAudioEndPoints(DataFlow.Capture, DeviceState.Active)
+            .Select(d => new SourceOption(d.ID, d.FriendlyName))
+            .ToList();
+
+    /// <summary>
+    /// 默认麦克风：上次用过的 → 系统默认（但避开蓝牙耳机的麦克风，打开它会让蓝牙耳机切到低音质的通话模式）→ 第一个。
+    /// </summary>
+    public string? DefaultMicrophoneId(IReadOnlyList<SourceOption> mics)
+    {
+        if (mics.Any(m => m.Id == _settings.CalibrationMicId)) return _settings.CalibrationMicId;
+        static bool IsBluetooth(string name)
+        {
+            string n = name.ToLowerInvariant();
+            return n.Contains("bluetooth") || n.Contains("蓝牙") || n.Contains("hands-free") || n.Contains("免提") || n.Contains("headset");
+        }
+        try
+        {
+            var def = _enumerator.GetDefaultAudioEndpoint(DataFlow.Capture, Role.Communications);
+            if (!IsBluetooth(def.FriendlyName)) return def.ID;
+        }
+        catch { }
+        return (mics.FirstOrDefault(m => !IsBluetooth(m.Name)) ?? mics.FirstOrDefault())?.Id;
+    }
+
+    /// <summary>运行校准，成功时自动应用新的延迟值。返回给用户看的结果说明。</summary>
+    public async Task<(bool ok, string message)> CalibrateAsync(string micId, IProgress<string> progress, CancellationToken cancellation)
+    {
+        if (CalibrationBlocker() is { } blocker) return (false, blocker);
+
+        var outputs = Devices.Where(d => _router.Find(d.Id) != null).ToList();
+        _settings.CalibrationMicId = micId;
+        IsCalibrating = true;
+        try
+        {
+            var result = await Calibrator.RunAsync(
+                _router, _enumerator.GetDevice(_router.SourceDeviceId!), _enumerator.GetDevice(micId),
+                outputs.Select(d => d.Id).ToList(), progress, cancellation);
+
+            if (!result.Success)
+            {
+                // 失败信息里的设备编号换成设备名
+                string msg = result.Message;
+                for (int i = 0; i < outputs.Count; i++) msg = msg.Replace($"第 {i + 1} 台设备", $"「{outputs[i].Name}」");
+                return (false, msg);
+            }
+
+            var current = outputs.ToDictionary(d => d.Id, d => d.DelayMs);
+            var suggested = CalibrationAnalyzer.SuggestDelays(result.Devices, current);
+            if (suggested.Values.Any(v => v > 500))
+                return (false, "测得的延迟差超过 500 ms，结果可能不可靠。请让环境安静一些、把耳机靠近麦克风再试一次。");
+
+            foreach (var d in outputs) d.DelayMs = suggested[d.Id];
+            _settings.Save();
+
+            var slowest = outputs.First(d => suggested[d.Id] == 0);
+            var lines = outputs.Where(d => d != slowest)
+                .Select(d => $"「{d.Name}」比它快 {suggested[d.Id]:0} ms，已自动延后");
+            return (true, $"校准完成。最慢的是「{slowest.Name}」。\n" + string.Join("\n", lines));
+        }
+        catch (OperationCanceledException)
+        {
+            return (false, "已取消校准。");
+        }
+        catch (Exception ex)
+        {
+            return (false, $"校准失败：{ex.Message}");
+        }
+        finally
+        {
+            IsCalibrating = false;
+        }
+    }
+
+    // ───────────── 方案 ─────────────
+
+    public ObservableCollection<string> PresetNames { get; } = new();
+
+    /// <summary>选中一个方案就立即应用。</summary>
+    public string? SelectedPreset
+    {
+        get => _selectedPreset;
+        set
+        {
+            if (!Set(ref _selectedPreset, value) || value == null) return;
+            if (_settings.Presets.TryGetValue(value, out var preset)) ApplyPreset(preset);
+            StatusText = $"已切换到方案「{value}」";
+        }
+    }
+
+    public void SavePreset(string name)
+    {
+        _settings.Presets[name] = new Preset
+        {
+            AlignMode = AlignMode,
+            BaseLatencyMs = BaseLatencyMs,
+            Devices = Devices.ToDictionary(d => d.Id, d => new DeviceSettings
+            {
+                Enabled = d.IsEnabled, Volume = d.Volume, DelayMs = d.DelayMs, Mono = d.Mono,
+            }),
+        };
+        _settings.Save();
+        RebuildPresetNames();
+        _selectedPreset = name;
+        OnPropertyChanged(nameof(SelectedPreset));
+        StatusText = $"已保存方案「{name}」";
+    }
+
+    public void DeleteSelectedPreset()
+    {
+        if (_selectedPreset == null) return;
+        _settings.Presets.Remove(_selectedPreset);
+        _settings.Save();
+        StatusText = $"已删除方案「{_selectedPreset}」";
+        _selectedPreset = null;
+        RebuildPresetNames();
+        OnPropertyChanged(nameof(SelectedPreset));
+    }
+
+    public string SuggestPresetName()
+    {
+        for (int i = 1; ; i++)
+            if (!_settings.Presets.ContainsKey($"方案 {i}")) return $"方案 {i}";
+    }
+
+    private void RebuildPresetNames()
+    {
+        PresetNames.Clear();
+        foreach (var n in _settings.Presets.Keys.OrderBy(n => n)) PresetNames.Add(n);
+    }
+
+    private void ApplyPreset(Preset preset)
+    {
+        BaseLatencyMs = preset.BaseLatencyMs;
+        foreach (var vm in Devices)
+            ApplyDeviceSettings(vm, preset.Devices.TryGetValue(vm.Id, out var s) ? s.Clone() : new DeviceSettings());
+        // 对齐模式切换会自动重启共享
+        AlignMode = preset.AlignMode;
+        _settings.Save();
+    }
+
+    private static void ApplyDeviceSettings(DeviceViewModel vm, DeviceSettings s)
+    {
+        vm.Volume = s.Volume;
+        vm.DelayMs = s.DelayMs;
+        vm.Mono = s.Mono;
+        vm.IsEnabled = s.Enabled;
     }
 
     public void Dispose()

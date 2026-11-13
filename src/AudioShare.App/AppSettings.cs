@@ -8,6 +8,17 @@ public sealed class DeviceSettings
     public bool Enabled { get; set; }
     public double Volume { get; set; } = 100;
     public double DelayMs { get; set; }
+    public bool Mono { get; set; }
+
+    public DeviceSettings Clone() => (DeviceSettings)MemberwiseClone();
+}
+
+/// <summary>一组设备设置，例如"蓝牙 + 有线看电影"，可以一键切换。</summary>
+public sealed class Preset
+{
+    public bool AlignMode { get; set; } = true;
+    public double BaseLatencyMs { get; set; } = 40;
+    public Dictionary<string, DeviceSettings> Devices { get; set; } = new();
 }
 
 /// <summary>对齐模式改动系统设置前的状态，用于停止或崩溃后恢复。</summary>
@@ -32,7 +43,7 @@ public sealed class AppSettings
     /// <summary>对齐模式（推荐）：把系统声音转到闲置设备并静音，所有设备都播放复制的声音。</summary>
     public bool AlignMode { get; set; } = true;
 
-    public double BaseLatencyMs { get; set; } = 60;
+    public double BaseLatencyMs { get; set; } = 40;
 
     /// <summary>上次退出时是否正在共享，开机自启时用来决定是否自动开始。</summary>
     public bool WasRunning { get; set; }
@@ -41,6 +52,11 @@ public sealed class AppSettings
     public RelayRestoreState? PendingRestore { get; set; }
 
     public Dictionary<string, DeviceSettings> Devices { get; set; } = new();
+
+    public Dictionary<string, Preset> Presets { get; set; } = new();
+
+    /// <summary>上次校准用的麦克风。</summary>
+    public string? CalibrationMicId { get; set; }
 
     public static AppSettings Load()
     {

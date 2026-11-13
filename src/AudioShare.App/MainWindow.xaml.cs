@@ -68,6 +68,25 @@ public partial class MainWindow : Window
         base.OnClosing(e);
     }
 
+    private void OnCalibrate(object sender, RoutedEventArgs e)
+    {
+        new CalibrationWindow(_viewModel) { Owner = this }.ShowDialog();
+    }
+
+    private void OnSavePreset(object sender, RoutedEventArgs e)
+    {
+        var name = InputDialog.Ask(this, "保存方案", "给当前的设备设置起个名字，例如「蓝牙 + 有线看电影」",
+            _viewModel.SelectedPreset ?? _viewModel.SuggestPresetName());
+        if (!string.IsNullOrEmpty(name)) _viewModel.SavePreset(name);
+    }
+
+    private void OnDeletePreset(object sender, RoutedEventArgs e)
+    {
+        if (_viewModel.SelectedPreset is not { } name) return;
+        if (MessageBox.Show(this, $"删除方案「{name}」？", "删除方案", MessageBoxButton.OKCancel) == MessageBoxResult.OK)
+            _viewModel.DeleteSelectedPreset();
+    }
+
     [DllImport("dwmapi.dll")]
     private static extern int DwmSetWindowAttribute(IntPtr hwnd, int attribute, ref int value, int size);
 

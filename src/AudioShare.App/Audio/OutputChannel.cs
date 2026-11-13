@@ -51,6 +51,12 @@ public sealed class OutputChannel : IDisposable
 
     public bool IsWaiting => _resampler.IsPriming;
 
+    /// <summary>因为缓冲不够出现断续（杂音）的累计次数。</summary>
+    public int CrackleCount => _resampler.CrackleCount;
+
+    /// <summary>左右声道合并：只戴一只耳机时也能听到完整内容。</summary>
+    public bool Mono { get; set; }
+
     public int TargetLatencyMs
     {
         get => _resampler.TargetLatencyMs;
@@ -69,7 +75,18 @@ public sealed class OutputChannel : IDisposable
         int needed = frames * _channels;
         if (_mapBuffer.Length < needed) _mapBuffer = new float[needed * 2];
         ChannelMapper.Map(source, sourceChannels, _mapBuffer, _channels, frames);
+        if (Mono && _channels >= 2)
+        {
+            for (int f = 0; f < frames; f++)
+            {
+                int o = f * _channels;
+                float m = (_mapBuffer[o] + _mapBuffer[o + 1]) * 0.5f;
+                _mapBuffer[o] = m;
+                _mapBuffer[o + 1] = m;
+            }
+        }
         _ring.Write(_mapBuffer.AsSpan(0, needed));
+        _ring.LastWriteMs = Environment.TickCount64;
     }
 
     public void Dispose()

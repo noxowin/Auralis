@@ -10,6 +10,7 @@ public sealed class DeviceViewModel : ObservableObject
     private string _status = "";
     private double _level;
     private bool _hasError;
+    private bool _mono;
 
     public DeviceViewModel(string id, string name, string format, Action<DeviceViewModel, string> onChanged)
     {
@@ -64,6 +65,16 @@ public sealed class DeviceViewModel : ObservableObject
         set
         {
             if (Set(ref _delayMs, Math.Round(value / 5) * 5)) _onChanged(this, nameof(DelayMs));
+        }
+    }
+
+    /// <summary>左右声道合并，只戴一只耳机时也能听到完整内容。</summary>
+    public bool Mono
+    {
+        get => _mono;
+        set
+        {
+            if (Set(ref _mono, value)) _onChanged(this, nameof(Mono));
         }
     }
 
